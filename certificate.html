@@ -15,7 +15,7 @@
 (function(){
   var ok=false; try{ ok = sessionStorage.getItem('rs.role')==='admin'; }catch(e){}
   window.__RS_ADMIN = ok;
-  window.__CERT_VERSION = 'v2.8';
+  window.__CERT_VERSION = 'v2.9';
   if(!ok){
     var st=document.createElement('style');
     st.textContent='.app,#toast,#off,#printRoot{display:none!important}';

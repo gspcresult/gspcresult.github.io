@@ -163,7 +163,14 @@
   .ps-meta{display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px 24px;margin-bottom:16px;font-size:14px;}
   .ps-meta span b{color:#000;font-weight:700;}
   .ps-table{width:100%;border-collapse:collapse;}
-  .ps-table th,.ps-table td{border:1px solid #333;padding:9px 10px;font-size:15px;text-align:center;}
+  .ps-table th,.ps-table td{border:1px solid #333;padding:9px 10px;font-size:var(--fs,15px);text-align:center;}
+  .ps-table tbody td{padding-top:var(--rp,9px);padding-bottom:var(--rp,9px);}
+  .ps-table tr{page-break-inside:avoid;}
+  /* compact header for the Model Test PDF pages, so more of each landscape page is left for rows */
+  #mtPdfSheet .ps-logo{width:64px;height:64px;}
+  #mtPdfSheet .ps-logo-spacer{width:64px;}
+  #mtPdfSheet .ps-titleblock h1{font-size:26px;}
+  #mtPdfSheet .ps-header-row{padding-bottom:8px;margin-bottom:10px;}
   .ps-table th{background:#eee;font-weight:700;}
   .ps-table td.ps-name{text-align:left;}
   .ps-table td.ps-top{font-size:34px;font-weight:700;vertical-align:middle;}
@@ -653,7 +660,7 @@ function toBnOrdinal(n){
   return toBnDigits(n)+'তম';
 }
 
-const APP_VERSION = "v2.8";            // bump together with CERT_VERSION in certificate.html on every upload
+const APP_VERSION = "v2.9";            // bump together with CERT_VERSION in certificate.html on every upload
 const APP_VERSION_DATE = "28-10-2026"; // bump this string every time a new version is shipped
 
 function render(){
@@ -2272,7 +2279,7 @@ function mtResultTableHtml(sheet, data, forPrint){
       <div class="ps-logo-spacer"></div>
     </div>` : ''}
     <div style="overflow-x:auto;">
-    <table class="${tableClass}" style="min-width:${forPrint?'auto':'900px'};">
+    <table class="${tableClass}" style="min-width:${forPrint?'auto':'900px'};${forPrint && data.fs ? `--fs:${data.fs}px;` : ''}${forPrint && data.rp ? `--rp:${data.rp}px;` : ''}">
       <thead>
         <tr><th rowspan="2">ক্রম</th><th rowspan="2">শিক্ষার্থীর নাম</th>${headerCells}<th rowspan="2">T.Marks</th><th rowspan="2">GPA</th><th rowspan="2">Grading</th><th rowspan="2">Position</th></tr>
         <tr>${subHeaderCells}</tr>
@@ -2280,72 +2287,113 @@ function mtResultTableHtml(sheet, data, forPrint){
       <tbody>${bodyRows}</tbody>
     </table>
     </div>
-    ${forPrint ? `<p style="margin-top:16px;font-size:18px;font-weight:700;text-align:center;">মার্কের ভিত্তিতে মেধাস্থান নির্ধারণ করা হয়েছে।</p>` : ''}
+    ${forPrint ? `<p style="margin-top:10px;font-size:16px;font-weight:700;text-align:center;">মার্কের ভিত্তিতে মেধাস্থান নির্ধারণ করা হয়েছে।</p>` : ''}
   `;
 }
 
-// Multi-page PDF: chunks students into pages of 32 rows, repeating the full header+column
-// titles on every page (per the spec — mobile browsers don't repeat table headers on their own).
-// Picks a canvas width that roughly matches how wide the table actually is (based on how many
-// subjects it has) instead of always using a fixed wide canvas — with few subjects, a fixed-wide
-// canvas left a lot of empty space next to the table, which made the header's logo look like it
-// had drifted off to one side relative to the (much narrower) table below it.
+// ---------------------------------------------------------------------------------------------
+// Model Test PDF — always LANDSCAPE A4. Pages are NOT a fixed 32 rows: the table is measured and as many
+// rows as really fit are put on each page. A row is never cut in two — if a long name wraps onto two lines
+// and doesn't fit at the bottom, the whole row moves to the next page. Serial numbers continue across
+// pages (page 2 carries on from where page 1 ended). Every page is drawn at the SAME size, the text is
+// kept large for landscape, and the spare space at the bottom of a page is shared out between the rows so
+// the page never looks empty.
+// ---------------------------------------------------------------------------------------------
+const MT_PAGE_W = 842, MT_PAGE_H = 595, MT_PAGE_MARGIN = 20;           // A4 landscape, in pt
+const MT_PAGE_ASPECT = (MT_PAGE_W - 2*MT_PAGE_MARGIN) / (MT_PAGE_H - 2*MT_PAGE_MARGIN);
+const MT_SHEET_PAD = 24;                                                // padding of the off-screen sheet, px
+const MT_RP_BASE = 7;                                                   // base top/bottom padding of a body row, px
+
+// canvas width for the off-screen sheet: wider when there are many subject columns
 function mtComputeContainerWidth(subjectCount){
-  return Math.min(1400, Math.max(750, 550 + subjectCount*140));
+  return Math.min(1600, Math.max(1050, 560 + subjectCount*150));
 }
 
-// Renders one chunk (page) of the merit list to an off-screen canvas. Shared by both the PDF
-// download and the WhatsApp/share function so they always produce identical-looking pages.
-async function mtRenderChunkToCanvas(sheet, subjects, chunkRows, offset){
+// show the off-screen sheet (invisible to the user) with the given width / minimum height
+function mtPdfSheetOpen(width, minHeight){
   const sheetEl = document.getElementById('mtPdfSheet');
-  const chunkData = { subjects, rows: chunkRows, offset: offset || 0 };
-  sheetEl.innerHTML = mtResultTableHtml(sheet, chunkData, true);
-  const prevStyle = sheetEl.getAttribute('style') || '';
+  const prev = sheetEl.getAttribute('style') || '';
   sheetEl.style.display = 'block';
   sheetEl.style.position = 'fixed';
   sheetEl.style.top = '0';
   sheetEl.style.left = '-10000px';
-  sheetEl.style.width = mtComputeContainerWidth(subjects.length) + 'px';
+  sheetEl.style.boxSizing = 'border-box';
+  sheetEl.style.width = width + 'px';
+  sheetEl.style.minHeight = (minHeight || 0) + 'px';
   sheetEl.style.background = '#ffffff';
-  sheetEl.style.padding = '24px';
+  sheetEl.style.padding = MT_SHEET_PAD + 'px';
   sheetEl.style.zIndex = '-1';
-  await new Promise(r=>setTimeout(r,60));
-  const canvas = await html2canvas(sheetEl, { scale:2, backgroundColor:'#ffffff', useCORS:true });
-  sheetEl.setAttribute('style', prevStyle);
-  sheetEl.innerHTML = '';
-  return canvas;
+  return { sheetEl, prev };
+}
+function mtPdfSheetClose(h){ h.sheetEl.setAttribute('style', h.prev); h.sheetEl.innerHTML = ''; }
+
+// Measures everything once and decides which rows go on which page.
+async function mtPlanPages(sheet, subjects, rows){
+  let W = mtComputeContainerWidth(subjects.length);
+  let fs = 16;                                            // larger text than before (landscape has room)
+  const h = mtPdfSheetOpen(W, 0);
+  try{
+    for(let attempt = 0; attempt < 12; attempt++){
+      h.sheetEl.style.width = W + 'px';
+      h.sheetEl.innerHTML = mtResultTableHtml(sheet, { subjects, rows, offset: 0, fs, rp: MT_RP_BASE }, true);
+      await new Promise(r=>setTimeout(r, 80));
+      const wrapper = h.sheetEl.querySelector('table').parentElement;
+      if(h.sheetEl.querySelector('table').scrollWidth <= wrapper.clientWidth + 1) break;   // fits
+      if(fs > 12) fs -= 1; else W = Math.round(W * 1.12);                                  // too wide: shrink text, then widen
+    }
+    const H = Math.round(W / MT_PAGE_ASPECT);             // page height (px) so that width-fit == page-fit
+    const trs = Array.from(h.sheetEl.querySelectorAll('tbody tr'));
+    const heights = trs.map(tr=> tr.getBoundingClientRect().height);
+    const bodyH = heights.reduce((a,b)=>a+b, 0);
+    const contentH = h.sheetEl.scrollHeight - 2*MT_SHEET_PAD;
+    const fixedH = contentH - bodyH;                      // logo/title + column headings + footer line
+    const avail = H - 2*MT_SHEET_PAD - fixedH - 6;        // room for body rows on one page
+    const pages = [];
+    let start = 0, used = 0;
+    for(let i = 0; i < heights.length; i++){
+      if(i > start && used + heights[i] > avail){ pages.push({ start, end: i, used }); start = i; used = 0; }
+      used += heights[i];
+    }
+    pages.push({ start, end: heights.length, used });
+    // share spare space between the rows of a page (only when the page is reasonably full)
+    pages.forEach((p, idx)=>{
+      const n = p.end - p.start;
+      const leftover = avail - p.used;
+      const full = (idx < pages.length - 1) || (p.used / avail > 0.6);
+      p.rp = (full && n > 0) ? Math.round((MT_RP_BASE + Math.max(0, Math.min(7, leftover / (2*n)))) * 2) / 2 : MT_RP_BASE;
+    });
+    return { W, H, fs, pages };
+  } finally { mtPdfSheetClose(h); }
+}
+
+// Renders one page of the merit list to an off-screen canvas. Shared by the PDF download and the
+// WhatsApp/share function so they always produce identical-looking pages.
+async function mtRenderChunkToCanvas(sheet, subjects, chunkRows, offset, layout){
+  const h = mtPdfSheetOpen(layout.W, layout.H);
+  try{
+    h.sheetEl.innerHTML = mtResultTableHtml(sheet, { subjects, rows: chunkRows, offset: offset || 0, fs: layout.fs, rp: layout.rp }, true);
+    await new Promise(r=>setTimeout(r, 60));
+    return await html2canvas(h.sheetEl, { scale:2, backgroundColor:'#ffffff', useCORS:true });
+  } finally { mtPdfSheetClose(h); }
 }
 
 async function mtBuildResultPdf(sheet, data){
-  const ROWS_PER_PAGE = 32;
   const { subjects, rows } = data;
-  const chunks = [];
-  for(let i=0;i<rows.length;i+=ROWS_PER_PAGE){ chunks.push(rows.slice(i, i+ROWS_PER_PAGE)); }
-  if(!chunks.length) chunks.push([]);
-
-  // Pass 1: draw every page (serial numbers continue: page 2 starts at 33).
+  const layout = await mtPlanPages(sheet, subjects, rows);
   const shots = [];
-  for(let c=0;c<chunks.length;c++){
-    const canvas = await mtRenderChunkToCanvas(sheet, subjects, chunks[c], c * ROWS_PER_PAGE);
+  for(const pg of layout.pages){
+    const canvas = await mtRenderChunkToCanvas(sheet, subjects, rows.slice(pg.start, pg.end), pg.start,
+                                               { W: layout.W, H: layout.H, fs: layout.fs, rp: pg.rp });
     shots.push({ img: canvas.toDataURL('image/jpeg', 0.95), w: canvas.width, h: canvas.height });
   }
-
-  // Pass 2: ONE common scale for every page, and the paper orientation that makes the table biggest.
-  // (Scaling each page on its own made the full 32-row pages shrink to fit the height while a short last page
-  //  stayed big — pages looked different sizes. A 32-row table is tall, so with few subjects portrait A4 fits it
-  //  much larger than landscape; with many subject columns it is wide and landscape wins.)
-  const A4 = { l: [842, 595], p: [595, 842] };
-  const fit = (o)=> Math.min(...shots.map(sh=> Math.min((A4[o][0]-40)/sh.w, (A4[o][1]-40)/sh.h)));
-  const orient = fit('p') > fit('l') ? 'p' : 'l';
-  const ratio = fit(orient);
-
   const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF(orient, 'pt', 'a4');
-  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pdf = new jsPDF('l', 'pt', 'a4');
+  // one common scale for every page
+  const ratio = Math.min(...shots.map(sh=> Math.min((MT_PAGE_W - 2*MT_PAGE_MARGIN)/sh.w, (MT_PAGE_H - 2*MT_PAGE_MARGIN)/sh.h)));
   shots.forEach((sh, idx)=>{
     if(idx > 0) pdf.addPage();
     const imgW = sh.w * ratio, imgH = sh.h * ratio;
-    pdf.addImage(sh.img, 'JPEG', (pageWidth-imgW)/2, 20, imgW, imgH);
+    pdf.addImage(sh.img, 'JPEG', (MT_PAGE_W - imgW)/2, MT_PAGE_MARGIN, imgW, imgH);
   });
   return pdf;
 }
